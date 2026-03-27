@@ -1,7 +1,5 @@
 @Library('pipeline-shared-lib@main') _
 
-import org.myorg.Utils
-
 pipeline {
     agent any
 
@@ -12,104 +10,43 @@ pipeline {
     }
 
     environment {
-        APP_NAME    = 'sample-node-app'
-        BRANCH_TYPE = "${Utils.getBranchType(env.BRANCH_NAME)}"
-        DOCKER_TAG  = "${Utils.getDockerTag(env.BRANCH_NAME, env.BUILD_NUMBER)}"
-        SHOULD_DEPLOY = "${Utils.shouldDeploy(env.BRANCH_TYPE)}"
+        APP_NAME  = 'sample-node-app'
+        DOCKER_TAG = "${env.BRANCH_NAME}-${env.BUILD_NUMBER}"
     }
 
     stages {
 
-        stage('Checkout & Info') {
+        stage('Build') {
             steps {
-                script {
-                    echo "Branch: ${env.BRANCH_NAME}"
-                    echo "Branch type: ${env.BRANCH_TYPE}"
-                    echo "Docker tag: ${env.DOCKER_TAG}"
-                    echo "Will deploy: ${env.SHOULD_DEPLOY}"
-
-                    // Load defaults from shared library resource
-                    def defaultsYaml = libraryResource('config/defaults.yaml')
-                    writeFile file: 'build-defaults.yaml', text: defaultsYaml
-                    echo "Loaded build defaults"
-                }
-            }
-        }
-
-        stage('Install & Build') {
-            steps {
-                // Calling the shared library buildApp step
                 buildApp(nodeVersion: '18', archive: true)
             }
         }
 
-        stage('Quality Gates') {
-            parallel {
-                stage('Unit Tests') {
-                    steps {
-                        runTests(
-                            testCmd:     'npm test -- --coverage --ci',
-                            coverageDir: 'coverage'
-                        )
-                    }
-                }
-                stage('Lint') {
-                    steps {
-                        script {
-                            try {
-                                sh 'npm run lint'
-                            } catch (err) {
-                                echo "Lint issues found: ${err.message}"
-                                currentBuild.result = 'UNSTABLE'
-                            }
-                        }
-                    }
-                }
-                stage('Security Scan') {
-                    steps {
-                        script {
-                            sh 'npm audit --audit-level=high || echo "Audit warnings present"'
-                        }
-                    }
-                }
+        stage('Test') {
+            steps {
+                runTests(
+                    testCmd:     'npm test -- --coverage --ci',
+                    coverageDir: 'coverage'
+                )
             }
         }
 
-        stage('Docker Build') {
-            when {
-                anyOf {
-                    branch 'main'
-                    branch 'develop'
-                    branch pattern: 'feature/*', comparator: 'GLOB'
-                }
-            }
+        stage('Complex Script') {
             steps {
                 script {
-                    echo "Building Docker image: ${APP_NAME}:${DOCKER_TAG}"
-                    // sh "docker build -t ${APP_NAME}:${DOCKER_TAG} ."
-                    sh "echo 'docker build simulated for tag ${DOCKER_TAG}'"
-                }
-            }
-        }
+                    def branchName = env.BRANCH_NAME
+                    def shouldDeploy = (branchName == 'main' || branchName == 'develop')
 
-        stage('Deploy') {
-            when {
-                expression { return SHOULD_DEPLOY == 'true' }
-            }
-            steps {
-                script {
-                    def targetEnv = (BRANCH_TYPE == 'production') ? 'production' : 'staging'
-                    echo "Deploying to ${targetEnv}..."
+                    echo "Branch: ${branchName}"
+                    echo "Should deploy: ${shouldDeploy}"
 
-                    // Calling an external shell script
-                    sh """
-                        chmod +x scripts/deploy.sh 2>/dev/null || true
-                        echo "Simulating deploy to ${targetEnv}"
-                        echo "App: ${APP_NAME}, Tag: ${DOCKER_TAG}"
-                    """
-
-                    if (targetEnv == 'production') {
-                        input message: "Confirm production deploy of ${DOCKER_TAG}?", ok: 'Deploy'
+                    if (shouldDeploy) {
+                        sh """
+                            chmod +x scripts/deploy.sh
+                            ./scripts/deploy.sh ${branchName} ${env.DOCKER_TAG}
+                        """
+                    } else {
+                        echo "Skipping deploy for branch: ${branchName}"
                     }
                 }
             }
@@ -121,14 +58,8 @@ pipeline {
             echo "Pipeline finished: ${currentBuild.result ?: 'SUCCESS'}"
             cleanWs()
         }
-        success {
-            echo "Build ${env.BUILD_NUMBER} succeeded on ${env.BRANCH_NAME}"
-        }
-        unstable {
-            echo "Build unstable — check test/lint results"
-        }
-        failure {
-            echo "Build failed — check logs"
-        }
+        success  { echo "Build succeeded on ${env.BRANCH_NAME}" }
+        unstable { echo "Build unstable — check test results" }
+        failure  { echo "Build failed — check logs" }
     }
 }
